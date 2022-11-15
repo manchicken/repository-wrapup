@@ -1,0 +1,12 @@
+[package]
+name = "repository-wrapup"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+async-trait = "0.1.58"
+chrono = "0.4.23"
+octocrab = { git = "https://github.com/XAMPPRocky/octocrab.git", version = "0.17.0" }
+tokio = { version = "1.21.2", features = ["full"] }
