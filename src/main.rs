@@ -229,6 +229,7 @@ async fn main() {
 
   // TODO: MISSING CASES:
   // - The repo is archived
+  // - Ability to suppress some conditions
   for repo_val in repo_map.values() {
     match is_repository_abandoned(repo_val, &user_map, &gh).await {
       AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
