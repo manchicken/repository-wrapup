@@ -7,6 +7,16 @@ edition = "2021"
 
 [dependencies]
 async-trait = "0.1.58"
+bitflags = "2.3.3"
 chrono = "0.4.23"
-octocrab = { git = "https://github.com/XAMPPRocky/octocrab.git", version = "0.17.0" }
+clap = { version = "4.3.19", features = ["derive"] }
+futures = {version = "0.3.28", features = ["executor"]}
+log = "0.4.19"
+octocrab = "0.25.1"
+serde = "1.0.147"
+simplelog = "0.12.1"
 tokio = { version = "1.21.2", features = ["full"] }
+
+[dev-dependencies]
+serde_json = "1.0.89"
+unimock = "0.5.3"
