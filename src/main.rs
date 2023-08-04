@@ -1,5 +1,5 @@
-use clap::Parser;
 use bitflags::bitflags;
+use clap::Parser;
 use repository_wrapup::github::{get_latest_commit, octocrab_handle};
 use std::collections::HashMap;
 
@@ -20,11 +20,21 @@ const ROTTEN_DAYS: i64 = 365 * 3;
 #[derive(Parser, Debug)]
 #[command(author, version, arg_required_else_help(true))]
 struct Opts {
-  #[arg(short = 'o', long)]
-  org: String,
+  /// Would you like to include archived repositories?
+  #[arg(short = 'a', long, default_value_t = false)]
+  archived: bool,
 
+  /// Would you like to enable debug information?
   #[arg(short = 'd', long, default_value_t = false)]
   debug: bool,
+
+  /// Would you like to include forks?
+  #[arg(short = 'f', long, default_value_t = false)]
+  forks: bool,
+
+  /// What is the name of the GitHub organization?
+  #[arg(short = 'o', long)]
+  org: String,
 }
 
 bitflags! {
@@ -87,7 +97,7 @@ async fn get_repository_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, RepoC
   let mut to_return: HashMap<String, RepoCommitPair> = HashMap::new();
   let mut page_number = 0u32;
 
-  loop {
+  'pagination_loop: loop {
     let current_page = match orgs_handle
       .list_repos()
       .per_page(100u8)
@@ -102,10 +112,19 @@ async fn get_repository_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, RepoC
     // Stop looking if we're not getting any more items
     if current_page.items.is_empty() {
       debug!("Finished paging through repositories.");
-      break;
+      break 'pagination_loop;
     }
 
-    for repo in current_page {
+    'inside_page_loop: for repo in current_page {
+      // Skip over archived repositories.
+      if opts.archived || repo.archived.unwrap_or(false) {
+        continue 'inside_page_loop;
+      }
+      // Skip over forks, if asked to.
+      if opts.forks || repo.fork.unwrap_or(false) {
+        continue 'inside_page_loop;
+      }
+
       let full_repo_name = repo
         .full_name
         .as_ref()
@@ -234,22 +253,28 @@ async fn main() {
     match is_repository_abandoned(repo_val, &user_map, &gh).await {
       AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
         warn!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name);
-      },
+      }
       AbandonedType::ABANDONED_AND_MISSING_REPO => {
         warn!("Repo {} hasn't been touched in more than {} days, and the last person to commit to it is not presently in the org.", repo_val.repo.name, ROTTEN_DAYS);
-      },
+      }
       AbandonedType::MISSING_MAINTAINERS => {
-        warn!("Repo {}'s last commit was not made by a member of this org.", repo_val.repo.name);
-      },
+        warn!(
+          "Repo {}'s last commit was not made by a member of this org.",
+          repo_val.repo.name
+        );
+      }
       AbandonedType::EMPTY_REPO => {
         warn!("Repo {} is empty.", repo_val.repo.name);
-      },
+      }
       AbandonedType::UNTOUCHED_IN_AGES => {
-        warn!("Repo {} hasn't been touched in more than {} days.", repo_val.repo.name, ROTTEN_DAYS);
-      },
+        warn!(
+          "Repo {} hasn't been touched in more than {} days.",
+          repo_val.repo.name, ROTTEN_DAYS
+        );
+      }
       AbandonedType::NOT_ABANDONED | AbandonedType::FRESH_COMMITS => {
         info!("Repo is not abandoned: {}", repo_val.repo.name);
-      },
+      }
       _ => {
         panic!("Unhandled case for repo: {}", repo_val.repo.name);
       }
