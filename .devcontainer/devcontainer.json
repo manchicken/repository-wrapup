@@ -1,1 +1,10 @@
-{ "image": "mcr.microsoft.com/devcontainers/rust:latest" }
+{
+  "name": "Repository Wrap-up",
+  "image": "mcr.microsoft.com/devcontainers/rust:latest",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "latest",
+      "profile": "complete"
+    }
+  }
+}
