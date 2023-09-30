@@ -2,6 +2,7 @@ use bitflags::bitflags;
 use clap::Parser;
 use repository_wrapup::github::{get_latest_commit, octocrab_handle};
 use std::collections::HashMap;
+// use std::fs::File;
 
 use log::*;
 
@@ -32,6 +33,10 @@ struct Opts {
   #[arg(short = 'f', long, default_value_t = false)]
   forks: bool,
 
+  /// Would you like to print to a CSV file?
+  #[arg(short = 'c', long)]
+  csv_file: Option<String>,
+
   /// What is the name of the GitHub organization?
   #[arg(short = 'o', long)]
   org: String,
@@ -50,6 +55,8 @@ bitflags! {
   }
 }
 
+/// Fetch a map of all of the users in the organization, and then produce a map of their usernames to their
+/// user objects. This will make it easier to quickly check whether or not a user is a member of the organization.
 async fn get_user_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, Author> {
   let orgs_handle = gh.orgs(opts.org.clone());
 
@@ -91,10 +98,23 @@ pub struct RepoCommitPair {
   pub last_commit: Option<RepoCommit>,
 }
 
-async fn get_repository_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, RepoCommitPair> {
+fn should_skip_repo(opts: &Opts, repo: &Repository) -> bool {
+  // Skip over archived repositories.
+  if opts.archived || repo.archived.unwrap_or(false) {
+    return true;
+  }
+  // Skip over forks, if asked to.
+  if opts.forks || repo.fork.unwrap_or(false) {
+    return true;
+  }
+
+  false
+}
+
+async fn get_repository_map(opts: &Opts, gh: &Octocrab, user_map: &HashMap<String, Author>) -> u32 {
   let orgs_handle = gh.orgs(opts.org.clone());
 
-  let mut to_return: HashMap<String, RepoCommitPair> = HashMap::new();
+  let mut to_return = 0u32;
   let mut page_number = 0u32;
 
   'pagination_loop: loop {
@@ -116,28 +136,18 @@ async fn get_repository_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, RepoC
     }
 
     'inside_page_loop: for repo in current_page {
-      // Skip over archived repositories.
-      if opts.archived || repo.archived.unwrap_or(false) {
-        continue 'inside_page_loop;
-      }
-      // Skip over forks, if asked to.
-      if opts.forks || repo.fork.unwrap_or(false) {
+      if should_skip_repo(opts, &repo) {
         continue 'inside_page_loop;
       }
 
-      let full_repo_name = repo
-        .full_name
-        .as_ref()
-        .unwrap_or_else(|| panic!("No repo name somehow! {:#?}", repo))
-        .clone();
+      let repo_val = RepoCommitPair {
+        repo,
+        last_commit: None,
+      };
 
-      to_return.insert(
-        full_repo_name,
-        RepoCommitPair {
-          repo,
-          last_commit: None,
-        },
-      );
+      to_return += 1;
+      let abandoned_type = get_repository_abandoned_type(&repo_val, &user_map, gh).await;
+      get_report_line(&repo_val, &abandoned_type).await;
     }
 
     page_number += 1;
@@ -146,7 +156,9 @@ async fn get_repository_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, RepoC
   to_return
 }
 
-async fn is_repository_abandoned(
+/// Fetch the latest commit for the repository provided, and then use that information to determine whether
+/// or not the repository is abandoned. Return the abandonment status.
+async fn get_repository_abandoned_type(
   repo: &RepoCommitPair,
   user_map: &HashMap<String, Author>,
   gh: &Octocrab,
@@ -169,11 +181,13 @@ async fn is_repository_abandoned(
     }
   };
 
+  // OFI: It would be neat if we had the ability to check for whether or not _any_ of the maintainers
+  //      are still in the organization.
   if let Some(author_entry) = last_commit.committer.as_ref() {
     let committer_login = &author_entry.login;
-    if let None = user_map.get(committer_login) {
+    if user_map.get(committer_login).is_none() {
       debug!("Last commit was by a non-member: {}", committer_login);
-      to_return = to_return | AbandonedType::MISSING_MAINTAINERS;
+      to_return |= AbandonedType::MISSING_MAINTAINERS;
     }
   }
 
@@ -211,10 +225,43 @@ async fn is_repository_abandoned(
 
   // If the commit is older than the midpoint, then the repo is abandoned
   if commit_age > mid_point {
-    to_return = to_return | AbandonedType::UNTOUCHED_IN_AGES;
+    to_return |= AbandonedType::UNTOUCHED_IN_AGES;
   }
 
   to_return
+}
+
+/// Generate a report for the repository provided
+async fn get_report_line(repo_val: &RepoCommitPair, abandoned_type: &AbandonedType) {
+  match *abandoned_type {
+    AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
+      warn!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name);
+    }
+    AbandonedType::ABANDONED_AND_MISSING_REPO => {
+      warn!("Repo {} hasn't been touched in more than {} days, and the last person to commit to it is not presently in the org.", repo_val.repo.name, ROTTEN_DAYS);
+    }
+    AbandonedType::MISSING_MAINTAINERS => {
+      warn!(
+        "Repo {}'s last commit was not made by a member of this org.",
+        repo_val.repo.name
+      );
+    }
+    AbandonedType::EMPTY_REPO => {
+      warn!("Repo {} is empty.", repo_val.repo.name);
+    }
+    AbandonedType::UNTOUCHED_IN_AGES => {
+      warn!(
+        "Repo {} hasn't been touched in more than {} days.",
+        repo_val.repo.name, ROTTEN_DAYS
+      );
+    }
+    AbandonedType::NOT_ABANDONED | AbandonedType::FRESH_COMMITS => {
+      info!("Repo is not abandoned: {}", repo_val.repo.name);
+    }
+    _ => {
+      panic!("Unhandled case for repo: {}", repo_val.repo.name);
+    }
+  }
 }
 
 #[tokio::main]
@@ -238,48 +285,25 @@ async fn main() {
 
   debug!("DEBUG ENABLED");
 
+  /*
+  let csv_fh = if opts.csv_file.is_some() {
+    let fname = opts.csv_file.as_ref().unwrap().clone();
+    match File::create(&fname) {
+      Ok(fh) => Some(fh),
+      Err(e) => panic!("Error creating CSV file «{}»: {:?}", fname, e),
+    }
+  } else {
+    None
+  };
+  */
+
   let gh = octocrab_handle();
 
   let user_map: HashMap<String, Author> = get_user_map(&opts, &gh).await;
 
   debug!("Got users: {}", user_map.len());
 
-  let repo_map: HashMap<String, RepoCommitPair> = get_repository_map(&opts, &gh).await;
+  let repo_count = get_repository_map(&opts, &gh, &user_map).await;
 
-  // TODO: MISSING CASES:
-  // - The repo is archived
-  // - Ability to suppress some conditions
-  for repo_val in repo_map.values() {
-    match is_repository_abandoned(repo_val, &user_map, &gh).await {
-      AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
-        warn!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name);
-      }
-      AbandonedType::ABANDONED_AND_MISSING_REPO => {
-        warn!("Repo {} hasn't been touched in more than {} days, and the last person to commit to it is not presently in the org.", repo_val.repo.name, ROTTEN_DAYS);
-      }
-      AbandonedType::MISSING_MAINTAINERS => {
-        warn!(
-          "Repo {}'s last commit was not made by a member of this org.",
-          repo_val.repo.name
-        );
-      }
-      AbandonedType::EMPTY_REPO => {
-        warn!("Repo {} is empty.", repo_val.repo.name);
-      }
-      AbandonedType::UNTOUCHED_IN_AGES => {
-        warn!(
-          "Repo {} hasn't been touched in more than {} days.",
-          repo_val.repo.name, ROTTEN_DAYS
-        );
-      }
-      AbandonedType::NOT_ABANDONED | AbandonedType::FRESH_COMMITS => {
-        info!("Repo is not abandoned: {}", repo_val.repo.name);
-      }
-      _ => {
-        panic!("Unhandled case for repo: {}", repo_val.repo.name);
-      }
-    }
-  }
-
-  info!("Got repos: {}", repo_map.len());
+  info!("Got repos: {}", repo_count);
 }
