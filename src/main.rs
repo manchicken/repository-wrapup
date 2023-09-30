@@ -111,7 +111,11 @@ fn should_skip_repo(opts: &Opts, repo: &Repository) -> bool {
   false
 }
 
-async fn get_repository_map(opts: &Opts, gh: &Octocrab, user_map: &HashMap<String, Author>) -> u32 {
+async fn process_repositories(
+  opts: &Opts,
+  gh: &Octocrab,
+  user_map: &HashMap<String, Author>,
+) -> u32 {
   let orgs_handle = gh.orgs(opts.org.clone());
 
   let mut to_return = 0u32;
@@ -146,7 +150,7 @@ async fn get_repository_map(opts: &Opts, gh: &Octocrab, user_map: &HashMap<Strin
       };
 
       to_return += 1;
-      let abandoned_type = get_repository_abandoned_type(&repo_val, &user_map, gh).await;
+      let abandoned_type = get_repository_abandoned_type(&repo_val, user_map, gh).await;
       get_report_line(&repo_val, &abandoned_type).await;
     }
 
@@ -303,7 +307,7 @@ async fn main() {
 
   debug!("Got users: {}", user_map.len());
 
-  let repo_count = get_repository_map(&opts, &gh, &user_map).await;
+  let repo_count = process_repositories(&opts, &gh, &user_map).await;
 
   info!("Got repos: {}", repo_count);
 }

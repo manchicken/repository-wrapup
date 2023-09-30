@@ -28,7 +28,7 @@ pub async fn get_latest_commit(
   owner: &str,
   name: &str,
 ) -> Option<RepoCommit> {
-  let commits = match gh
+  match gh
     .repos(owner, name)
     .list_commits()
     .per_page(1)
@@ -58,9 +58,7 @@ pub async fn get_latest_commit(
       "Failed to fetch commits for «{}/{}»: {:?}",
       owner, name, err
     ),
-  };
-
-  commits
+  }
 }
 
 #[cfg(test)]
