@@ -12,7 +12,7 @@ chrono = "0.4.31"
 clap = { version = "4.4.5", features = ["derive"] }
 futures = {version = "0.3.28", features = ["executor"]}
 log = "0.4.20"
-octocrab = "0.30.1"
+octocrab = "0.31.1"
 serde = "1.0.188"
 simplelog = "0.12.1"
 tokio = { version = "1.32.0", features = ["full"] }
