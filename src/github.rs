@@ -1,6 +1,6 @@
 use std::env;
 
-use octocrab::models::{repos::RepoCommit, Repository};
+use octocrab::models::repos::RepoCommit;
 
 /// This function returns a live Octocrab instance.
 pub fn octocrab_handle() -> octocrab::Octocrab {
@@ -12,23 +12,12 @@ pub fn octocrab_handle() -> octocrab::Octocrab {
   }
 }
 
-pub async fn get_single_repo(
-  gh: &octocrab::Octocrab,
-  owner: &str,
-  name: &str,
-) -> octocrab::Result<Repository> {
-  match gh.repos(owner, name).get().await {
-    Ok(repo) => Ok(repo),
-    Err(e) => panic!("Failed to fetch repository: {:?}", e),
-  }
-}
-
 pub async fn get_latest_commit(
   gh: &octocrab::Octocrab,
   owner: &str,
   name: &str,
 ) -> Option<RepoCommit> {
-  let commits = match gh
+  match gh
     .repos(owner, name)
     .list_commits()
     .per_page(1)
@@ -58,9 +47,7 @@ pub async fn get_latest_commit(
       "Failed to fetch commits for «{}/{}»: {:?}",
       owner, name, err
     ),
-  };
-
-  commits
+  }
 }
 
 #[cfg(test)]
@@ -69,21 +56,6 @@ mod tests {
 
   const TEST_REPO_OWNER: &str = "manchicken";
   const TEST_REPO_NAME: &str = "testing-repository-wrapup";
-
-  #[tokio::test]
-  async fn test_get_single_repo() {
-    let gh = octocrab_handle();
-
-    let single_repo = get_single_repo(&gh, TEST_REPO_OWNER, TEST_REPO_NAME).await;
-    assert!(single_repo.is_ok());
-
-    let unwrapped_single_repo = single_repo.unwrap();
-    assert_eq!(unwrapped_single_repo.name, TEST_REPO_NAME);
-    assert_eq!(
-      unwrapped_single_repo.full_name,
-      Some(format!("{}/{}", TEST_REPO_OWNER, TEST_REPO_NAME))
-    );
-  }
 
   #[tokio::test]
   async fn test_get_latest_commit() {
