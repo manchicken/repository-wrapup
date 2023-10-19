@@ -2,7 +2,8 @@ use bitflags::bitflags;
 use clap::Parser;
 use repository_wrapup::github::{get_latest_commit, octocrab_handle};
 use std::collections::HashMap;
-// use std::fs::File;
+use std::fs::File;
+use std::io::Write;
 
 use log::*;
 
@@ -115,6 +116,7 @@ async fn process_repositories(
   opts: &Opts,
   gh: &Octocrab,
   user_map: &HashMap<String, Author>,
+  csv_fh: &Option<File>,
 ) -> u32 {
   let orgs_handle = gh.orgs(opts.org.clone());
 
@@ -151,7 +153,17 @@ async fn process_repositories(
 
       to_return += 1;
       let abandoned_type = get_repository_abandoned_type(&repo_val, user_map, gh).await;
-      get_report_line(&repo_val, &abandoned_type).await;
+      let report_line = get_report_line(&repo_val, &abandoned_type).await;
+
+      // Write the file if we've been asked to
+      if csv_fh.is_some() {
+        // But only if we've got something to write!
+        if let Some(line) = report_line {
+          if let Err(e) = csv_fh.as_ref().unwrap().write(line.as_bytes()) {
+            panic!("Failed to write CSV line: {:?}", e);
+          }
+        }
+      }
     }
 
     page_number += 1;
@@ -235,37 +247,56 @@ async fn get_repository_abandoned_type(
   to_return
 }
 
+fn csv_line(repo: &RepoCommitPair, reason: String) -> String {
+  let repo_name: String = if repo.repo.full_name.is_some() {
+    repo.repo.full_name.as_ref().unwrap().clone()
+  } else {
+    repo.repo.name.clone()
+  };
+  format!("\"{}\",{},\"{}\"\n", repo_name, true, reason)
+}
+
 /// Generate a report for the repository provided
-async fn get_report_line(repo_val: &RepoCommitPair, abandoned_type: &AbandonedType) {
-  match *abandoned_type {
+async fn get_report_line(
+  repo_val: &RepoCommitPair,
+  abandoned_type: &AbandonedType,
+) -> Option<String> {
+  let reason = match *abandoned_type {
     AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
-      warn!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name);
+      format!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name)
     }
     AbandonedType::ABANDONED_AND_MISSING_REPO => {
-      warn!("Repo {} hasn't been touched in more than {} days, and the last person to commit to it is not presently in the org.", repo_val.repo.name, ROTTEN_DAYS);
+      format!("Repo {} hasn't been touched in more than {} days, and the last person to commit to it is not presently in the org.", repo_val.repo.name, ROTTEN_DAYS)
     }
     AbandonedType::MISSING_MAINTAINERS => {
-      warn!(
+      format!(
         "Repo {}'s last commit was not made by a member of this org.",
         repo_val.repo.name
-      );
+      )
     }
     AbandonedType::EMPTY_REPO => {
-      warn!("Repo {} is empty.", repo_val.repo.name);
+      format!("Repo {} is empty.", repo_val.repo.name)
     }
     AbandonedType::UNTOUCHED_IN_AGES => {
-      warn!(
+      format!(
         "Repo {} hasn't been touched in more than {} days.",
         repo_val.repo.name, ROTTEN_DAYS
-      );
+      )
     }
     AbandonedType::NOT_ABANDONED | AbandonedType::FRESH_COMMITS => {
-      info!("Repo is not abandoned: {}", repo_val.repo.name);
+      debug!("Repo is not abandoned: {}", repo_val.repo.name);
+      String::new()
     }
     _ => {
       panic!("Unhandled case for repo: {}", repo_val.repo.name);
     }
+  };
+
+  if reason.is_empty() {
+    return None;
   }
+
+  Some(csv_line(repo_val, reason))
 }
 
 #[tokio::main]
@@ -289,17 +320,23 @@ async fn main() {
 
   debug!("DEBUG ENABLED");
 
-  /*
   let csv_fh = if opts.csv_file.is_some() {
     let fname = opts.csv_file.as_ref().unwrap().clone();
-    match File::create(&fname) {
+    let fh = match File::create(&fname) {
       Ok(fh) => Some(fh),
       Err(e) => panic!("Error creating CSV file «{}»: {:?}", fname, e),
+    };
+    if let Err(e) = fh
+      .as_ref()
+      .unwrap()
+      .write(b"\"Repository\",\"Is Abandoned?\",\"Note\"\n")
+    {
+      panic!("Failed to write headers to the new CSV file: {:?}", e);
     }
+    fh
   } else {
     None
   };
-  */
 
   let gh = octocrab_handle();
 
@@ -307,7 +344,7 @@ async fn main() {
 
   debug!("Got users: {}", user_map.len());
 
-  let repo_count = process_repositories(&opts, &gh, &user_map).await;
+  let repo_count = process_repositories(&opts, &gh, &user_map, &csv_fh).await;
 
   info!("Got repos: {}", repo_count);
 }
