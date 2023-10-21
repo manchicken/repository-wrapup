@@ -56,6 +56,11 @@ bitflags! {
   }
 }
 
+struct AbandonedDetails {
+  abandoned_type: AbandonedType,
+  last_commit_days: i64,
+}
+
 /// Fetch a map of all of the users in the organization, and then produce a map of their usernames to their
 /// user objects. This will make it easier to quickly check whether or not a user is a member of the organization.
 async fn get_user_map(opts: &Opts, gh: &Octocrab) -> HashMap<String, Author> {
@@ -152,8 +157,8 @@ async fn process_repositories(
       };
 
       to_return += 1;
-      let abandoned_type = get_repository_abandoned_type(&repo_val, user_map, gh).await;
-      let report_line = get_report_line(&repo_val, &abandoned_type).await;
+      let abandoned_details = get_repository_abandoned_type(&repo_val, user_map, gh).await;
+      let report_line = get_report_line(&repo_val, &abandoned_details).await;
 
       // Write the file if we've been asked to
       if csv_fh.is_some() {
@@ -163,6 +168,8 @@ async fn process_repositories(
             panic!("Failed to write CSV line: {:?}", e);
           }
         }
+      } else if report_line.is_some() {
+        print!("{}", report_line.unwrap());
       }
     }
 
@@ -178,7 +185,7 @@ async fn get_repository_abandoned_type(
   repo: &RepoCommitPair,
   user_map: &HashMap<String, Author>,
   gh: &Octocrab,
-) -> AbandonedType {
+) -> AbandonedDetails {
   let mut to_return: AbandonedType = AbandonedType::NOT_ABANDONED;
   let name = repo.repo.name.as_ref();
   let owner = repo
@@ -193,7 +200,10 @@ async fn get_repository_abandoned_type(
     Some(commit) => commit,
     None => {
       debug!("No commits found for repo, it is empty: {}", name);
-      return AbandonedType::EMPTY_REPO;
+      return AbandonedDetails {
+        abandoned_type: AbandonedType::EMPTY_REPO,
+        last_commit_days: -1,
+      };
     }
   };
 
@@ -223,11 +233,11 @@ async fn get_repository_abandoned_type(
 
   // If the commit is within FRESH_DAYS, then we'll give it a minimum score
   if commit_age <= FRESH_DAYS {
-    return to_return | AbandonedType::FRESH_COMMITS;
+    to_return = to_return | AbandonedType::FRESH_COMMITS;
   }
   // If the commit is older than ROTTEN_DAYS, then the repo is abandoned
   else if commit_age > ROTTEN_DAYS {
-    return to_return | AbandonedType::UNTOUCHED_IN_AGES;
+    to_return = to_return | AbandonedType::UNTOUCHED_IN_AGES;
   }
 
   // Now let's get the age of the repository
@@ -244,23 +254,34 @@ async fn get_repository_abandoned_type(
     to_return |= AbandonedType::UNTOUCHED_IN_AGES;
   }
 
-  to_return
+  AbandonedDetails {
+    abandoned_type: to_return,
+    last_commit_days: commit_age,
+  }
 }
 
-fn csv_line(repo: &RepoCommitPair, reason: String) -> String {
+fn csv_header() -> String {
+  String::from("\"Repository\",\"Is Abandoned?\",\"Days of Silence\",\"Notes\"\n")
+}
+
+fn csv_line(repo: &RepoCommitPair, abandoned_details: &AbandonedDetails, reason: String) -> String {
   let repo_name: String = if repo.repo.full_name.is_some() {
     repo.repo.full_name.as_ref().unwrap().clone()
   } else {
     repo.repo.name.clone()
   };
-  format!("\"{}\",{},\"{}\"\n", repo_name, true, reason)
+  format!(
+    "\"{}\",{},{},\"{}\"\n",
+    repo_name, true, abandoned_details.last_commit_days, reason
+  )
 }
 
 /// Generate a report for the repository provided
 async fn get_report_line(
   repo_val: &RepoCommitPair,
-  abandoned_type: &AbandonedType,
+  abandoned_details: &AbandonedDetails,
 ) -> Option<String> {
+  let abandoned_type = &abandoned_details.abandoned_type;
   let reason = match *abandoned_type {
     AbandonedType::MISSING_MAINTAINERS_BUT_FRESH_COMMITS => {
       format!("Repo {} does have fresh commits, but they were made by someone who is not a member of this org.", repo_val.repo.name)
@@ -296,7 +317,7 @@ async fn get_report_line(
     return None;
   }
 
-  Some(csv_line(repo_val, reason))
+  Some(csv_line(repo_val, abandoned_details, reason))
 }
 
 #[tokio::main]
@@ -326,15 +347,12 @@ async fn main() {
       Ok(fh) => Some(fh),
       Err(e) => panic!("Error creating CSV file «{}»: {:?}", fname, e),
     };
-    if let Err(e) = fh
-      .as_ref()
-      .unwrap()
-      .write(b"\"Repository\",\"Is Abandoned?\",\"Note\"\n")
-    {
+    if let Err(e) = fh.as_ref().unwrap().write(csv_header().as_bytes()) {
       panic!("Failed to write headers to the new CSV file: {:?}", e);
     }
     fh
   } else {
+    print!("{}", csv_header());
     None
   };
 
