@@ -168,6 +168,8 @@ async fn process_repositories(
             panic!("Failed to write CSV line: {:?}", e);
           }
         }
+      } else if report_line.is_some() {
+        print!("{}", report_line.unwrap());
       }
     }
 
@@ -350,6 +352,7 @@ async fn main() {
     }
     fh
   } else {
+    print!("{}", csv_header());
     None
   };
 
